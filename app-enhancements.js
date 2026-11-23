@@ -179,7 +179,7 @@
     document.getElementById('crumb').textContent = 'Stock de repuestos';
     document.getElementById('sidebar').classList.remove('open'); renderStock();
   };
-  const qty = item => Number(item.quantity || 0);
+  const qty = item => Number(item.quantity ?? item.qty ?? 0);
   window.renderStock = function() {
     const target = document.getElementById('stockTable'); if (!target) return;
     target.innerHTML = db.stockItems.length ? [...db.stockItems].sort((a,b)=>a.name.localeCompare(b.name,'es')).map(item => {
@@ -228,7 +228,7 @@
   };
   const originalSubmit=document.getElementById('entryForm').onsubmit;
   document.getElementById('entryForm').onsubmit=function(event) {
-    const form=this;
+    const form=this, field=name=>form.elements.namedItem(name);
     if(document.getElementById('modalTitle').textContent.includes('repuesto')) {
       event.preventDefault(); const id=form.dataset.stockEdit, old=id?db.stockItems.find(x=>x.id===id):null;
       const name=form.elements.stockName.value.trim();if(!name){toast('Ingresá el nombre del repuesto');return false;}
@@ -236,7 +236,7 @@
       if(!old){item.quantity=Number(form.elements.stockQty.value||0);db.stockItems.push(item);}save();closeModal();form.reset();delete form.dataset.stockEdit;toast(old?'Repuesto actualizado':'Repuesto agregado');return false;
     }
     const type=formType, beforeIds=new Set(db.jobs.map(j=>j.id)), beforeExpenseIds=new Set(db.expenses.map(x=>x.id)), editingId=typeof currentEditId==='undefined'?null:currentEditId;
-    if(type==='expense'&&form.elements.stockItemId?.value&&(!Number.isInteger(Number(form.elements.stockQty?.value))||Number(form.elements.stockQty?.value)<1)){
+    if(type==='expense'&&field('stockItemId')?.value&&(!Number.isInteger(Number(field('stockQty')?.value))||Number(field('stockQty')?.value)<1)){
       event.preventDefault();toast('Ingresá una cantidad entera mayor a cero para sumar al stock.');return false;
     }
     let submittedParts=[], expenseSnapshot=null;
@@ -253,7 +253,8 @@
     }
     if(type==='expense') {
       const oldId=editingId, old=oldId?db.expenses.find(x=>x.id===oldId):null;
-      expenseSnapshot={oldId,jobRef:form.elements.jobRef?.value||'',stockItemId:form.elements.stockItemId?.value||'',stockQty:Number(form.elements.stockQty?.value||0)};
+      expenseSnapshot={oldId,jobRef:field('jobRef')?.value||'',stockItemId:field('stockItemId')?.value||'',stockQty:Number(field('stockQty')?.value||0)};
+      if(expenseSnapshot.stockItemId&&!db.stockItems.some(x=>x.id===expenseSnapshot.stockItemId)){event.preventDefault();toast('El repuesto seleccionado ya no está disponible. Actualizá la pantalla y volvé a elegirlo.');return false;}
       if(old?.stockItemId){const item=db.stockItems.find(x=>x.id===old.stockItemId);if(item)item.quantity=qty(item)-Number(old.stockQty||0);}
     }
     const result=originalSubmit.call(this,event);
@@ -264,7 +265,7 @@
     }
     if(type==='expense') {
       const created=db.expenses.find(x=>!beforeExpenseIds.has(x.id));const expense=expenseSnapshot.oldId?db.expenses.find(x=>x.id===expenseSnapshot.oldId):created;
-      if(expense){if(expenseSnapshot.stockItemId){const item=db.stockItems.find(x=>x.id===expenseSnapshot.stockItemId),quantity=expenseSnapshot.stockQty;if(item&&quantity>0){const oldQuantity=qty(item),oldCost=Number(item.unitCost||0),cost=Number(expense.amount||0)/quantity;item.quantity=oldQuantity+quantity;item.unitCost=item.quantity>0?((oldQuantity*oldCost)+(cost*quantity))/item.quantity:cost;expense.stockItemId=item.id;expense.stockQty=quantity;expense.stockUnitCost=cost;}}
+      if(expense){if(expenseSnapshot.stockItemId){const item=db.stockItems.find(x=>x.id===expenseSnapshot.stockItemId),quantity=expenseSnapshot.stockQty;if(!item){toast('No se encontró el repuesto seleccionado; revisá el stock y volvé a guardar.');return false;}if(quantity>0){const oldQuantity=qty(item),oldCost=Number(item.unitCost||0),cost=Number(expense.amount||0)/quantity;item.quantity=oldQuantity+quantity;item.unitCost=item.quantity>0?((oldQuantity*oldCost)+(cost*quantity))/item.quantity:cost;expense.stockItemId=item.id;expense.stockQty=quantity;expense.stockUnitCost=cost;}}
         expense.jobRef=expenseSnapshot.jobRef;db.stockMoves=db.stockMoves.filter(m=>!(m.type==='purchase'&&m.referenceId===expense.id));if(expense.stockItemId)db.stockMoves.push({id:crypto.randomUUID(),type:'purchase',referenceId:expense.id,itemId:expense.stockItemId,quantity:Number(expense.stockQty||0),unitCost:Number(expense.stockUnitCost||0),date:expense.date});save();}
     }
     return result;
