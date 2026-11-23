@@ -1,5 +1,6 @@
-/* Login solo de administrador, bootstrap por invitación y sincronización NP. */
+/* Acceso de administrador y espacio de datos compartido de NP Sanitarios y Gas. */
 (() => {
+  const WORKSPACE_ID = 'np-sanitariosygas';
   const gate = document.getElementById('cloudGate');
   const message = document.getElementById('cloudMessage');
   const errorBox = document.getElementById('authError');
@@ -7,7 +8,7 @@
   const firstPasswordFields = document.getElementById('firstPasswordFields');
   const migrationActions = document.getElementById('migrationActions');
   const passwordModal = document.getElementById('passwordModal');
-  let client = null, user = null, loaded = false, loading = false;
+  let client = null, user = null, membership = null, loaded = false, loading = false;
   let lastUpdatedAt = null, saveTimer = null, saving = false, dirtyAgain = false;
   let passwordMode = 'change';
 
@@ -42,20 +43,34 @@
   }
   function showError(err) { errorBox.textContent = err?.message || String(err || 'Ocurrió un error.'); }
   function emptyData() { return { clients: [], jobs: [], equipment: [], quotes: [], expenses: [] }; }
-  function hasLocalData() { return ['clients','jobs','equipment','quotes','expenses'].some(k => Array.isArray(db[k]) && db[k].length); }
 
-  async function readWorkspace() {
-    const { data, error } = await client.from('np_workspaces')
-      .select('data,updated_at,password_initialized,migration_completed')
+  async function readMembership() {
+    const { data, error } = await client.from('np_admin_members').select('user_id,password_initialized')
       .eq('user_id', user.id).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+  async function ensureMembership() {
+    let row = await readMembership();
+    if (!row) {
+      const { data, error } = await client.from('np_admin_members').insert({ user_id: user.id })
+        .select('user_id,password_initialized').single();
+      if (error) throw error;
+      row = data;
+    }
+    return row;
+  }
+  async function readWorkspace() {
+    const { data, error } = await client.from('np_shared_workspace').select('id,data,updated_at,migration_completed')
+      .eq('id', WORKSPACE_ID).maybeSingle();
     if (error) throw error;
     return data;
   }
   async function ensureWorkspace() {
     let row = await readWorkspace();
     if (!row) {
-      const { data, error } = await client.from('np_workspaces').insert({ user_id: user.id, data: emptyData() })
-        .select('data,updated_at,password_initialized,migration_completed').single();
+      const { data, error } = await client.from('np_shared_workspace').insert({ id: WORKSPACE_ID, data: emptyData() })
+        .select('id,data,updated_at,migration_completed').single();
       if (error) throw error;
       row = data;
     }
@@ -65,16 +80,17 @@
     if (!user || loaded || loading) return;
     loading = true;
     try {
-      const row = await ensureWorkspace();
-      lastUpdatedAt = row.updated_at;
-      if (!row.password_initialized) {
-        showGate('Primer ingreso del administrador: asigná ahora una contraseña segura.', 'first-password');
-      } else if (!row.migration_completed) {
-        showGate(hasLocalData()
-          ? 'Elegí si querés subir a la nube los registros guardados en esta PC o empezar con el espacio vacío.'
-          : 'El espacio del administrador está listo. Elegí cómo comenzar.', 'migration');
+      membership = await ensureMembership();
+      if (!membership.password_initialized) {
+        showGate('Primer ingreso de administrador: asigná ahora una contraseña segura.', 'first-password');
+        return;
+      }
+      const workspace = await ensureWorkspace();
+      lastUpdatedAt = workspace.updated_at;
+      if (!workspace.migration_completed) {
+        showGate('Elegí importar un respaldo JSON o empezar con el espacio compartido vacío.', 'migration');
       } else {
-        db = row.data || emptyData();
+        db = workspace.data || emptyData();
         loaded = true;
         renderAll();
         showApp();
@@ -82,18 +98,17 @@
     } catch (err) { showError(err); }
     finally { loading = false; }
   }
-  async function initializeWorkspace(useLocal) {
+  async function initializeWorkspace(data) {
     errorBox.textContent = '';
     try {
-      const initial = useLocal ? db : emptyData();
       const updatedAt = new Date().toISOString();
-      const { error } = await client.from('np_workspaces').update({
-        data: initial, password_initialized: true, migration_completed: true, updated_at: updatedAt
-      }).eq('user_id', user.id);
+      const { error } = await client.from('np_shared_workspace').update({
+        data, migration_completed: true, updated_at: updatedAt
+      }).eq('id', WORKSPACE_ID);
       if (error) throw error;
-      const row = await readWorkspace();
-      db = row.data;
-      lastUpdatedAt = row.updated_at;
+      const workspace = await readWorkspace();
+      db = workspace.data;
+      lastUpdatedAt = workspace.updated_at;
       loaded = true;
       renderAll();
       showApp();
@@ -102,13 +117,13 @@
   async function writeWorkspace(payload) {
     const latest = await readWorkspace();
     if (!latest || latest.updated_at !== lastUpdatedAt) {
-      throw new Error('La nube cambió desde otro dispositivo. Recargá la aplicación para traer la versión más reciente antes de continuar.');
+      throw new Error('Los datos compartidos cambiaron desde otro dispositivo. Recargá la aplicación antes de guardar de nuevo.');
     }
     const updatedAt = new Date(Math.max(Date.now(), Date.parse(lastUpdatedAt || 0) + 1)).toISOString();
-    const { data, error } = await client.from('np_workspaces').update({ data: payload, updated_at: updatedAt })
-      .eq('user_id', user.id).eq('updated_at', lastUpdatedAt).select('updated_at').maybeSingle();
+    const { data, error } = await client.from('np_shared_workspace').update({ data: payload, updated_at: updatedAt })
+      .eq('id', WORKSPACE_ID).eq('updated_at', lastUpdatedAt).select('updated_at').maybeSingle();
     if (error) throw error;
-    if (!data) throw new Error('La nube cambió desde otro dispositivo. Recargá la aplicación para traer la versión más reciente antes de continuar.');
+    if (!data) throw new Error('Los datos compartidos cambiaron desde otro dispositivo. Recargá la aplicación antes de guardar de nuevo.');
     lastUpdatedAt = data.updated_at;
   }
   window.queueCloudSave = () => {
@@ -124,7 +139,7 @@
         t.textContent = 'Cambios guardados en la nube'; t.style.display = 'block';
         setTimeout(() => t.style.display = 'none', 1600);
       } catch (err) {
-        alert(`No se pudieron guardar los cambios en la nube. La copia de este navegador sigue intacta. Descargá un respaldo antes de recargar.\n\n${err.message || err}`);
+        alert(`No se pudieron guardar los cambios en la nube. Descargá un respaldo antes de recargar.\n\n${err.message || err}`);
       } finally {
         saving = false;
         if (dirtyAgain) { dirtyAgain = false; window.queueCloudSave(); }
@@ -155,17 +170,20 @@
     try {
       const { error } = await client.auth.updateUser({ password });
       if (error) throw error;
-      const { error: dbError } = await client.from('np_workspaces').update({ password_initialized: true })
+      const { error: membershipError } = await client.from('np_admin_members').update({ password_initialized: true })
         .eq('user_id', user.id);
-      if (dbError) throw dbError;
-      const row = await readWorkspace();
-      lastUpdatedAt = row.updated_at;
-      showGate(hasLocalData()
-        ? 'Contraseña asignada. Ahora elegí si subís los registros de esta PC o empezás con el espacio vacío.'
-        : 'Contraseña asignada. Tu espacio está listo para comenzar.', 'migration');
+      if (membershipError) throw membershipError;
+      membership.password_initialized = true;
+      const workspace = await ensureWorkspace();
+      lastUpdatedAt = workspace.updated_at;
+      if (!workspace.migration_completed) {
+        showGate('Tu contraseña está lista. Elegí importar un respaldo JSON o empezar con el espacio compartido vacío.', 'migration');
+      } else {
+        db = workspace.data || emptyData(); loaded = true; renderAll(); showApp();
+      }
     } catch (err) { showError(err); }
   };
-  document.getElementById('startEmptyBtn').onclick = () => initializeWorkspace(false);
+  document.getElementById('startEmptyBtn').onclick = () => initializeWorkspace(emptyData());
   document.getElementById('uploadBackupBtn').onclick = async () => {
     const file = document.getElementById('initialBackupFile').files[0];
     if (!file) { errorBox.textContent = 'Elegí primero el archivo JSON de respaldo.'; return; }
@@ -174,8 +192,7 @@
       if (!['clients','jobs','equipment','quotes','expenses'].every(k => Array.isArray(backup[k]))) {
         throw new Error('El archivo no tiene el formato de respaldo de NP Sanitarios y Gas.');
       }
-      db = Object.fromEntries(['clients','jobs','equipment','quotes','expenses'].map(k => [k, backup[k]]));
-      await initializeWorkspace(true);
+      await initializeWorkspace(Object.fromEntries(['clients','jobs','equipment','quotes','expenses'].map(k => [k, backup[k]])));
     } catch (err) { errorBox.textContent = err.message || String(err); }
   };
   document.getElementById('cancelPasswordBtn').onclick = () => { passwordModal.style.display = 'none'; };
@@ -213,18 +230,15 @@
   client.auth.onAuthStateChange((event, session) => {
     user = session?.user || null;
     if (event === 'SIGNED_OUT' || !user) {
-      loaded = false; loading = false; lastUpdatedAt = null;
-      db = emptyData();
-      localStorage.removeItem(DBKEY);
+      loaded = false; loading = false; membership = null; lastUpdatedAt = null;
+      db = emptyData(); localStorage.removeItem(DBKEY);
       document.querySelector('.app').style.visibility = 'hidden';
       showGate('Iniciá sesión como administrador. No se permiten altas de usuario desde esta pantalla.');
       return;
     }
     if (event === 'PASSWORD_RECOVERY') {
       setTimeout(async () => { await loadForUser(); if (loaded) showPasswordModal('recovery'); }, 0);
-    } else if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
-      setTimeout(loadForUser, 0);
-    }
+    } else if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') setTimeout(loadForUser, 0);
   });
   client.auth.getSession().then(({ data, error }) => {
     if (error) showError(error);
@@ -236,9 +250,9 @@
   async function refreshWorkspaceIfChanged() {
     if (!user || !loaded || saving || saveTimer) return;
     try {
-      const row = await readWorkspace();
-      if (row && row.updated_at !== lastUpdatedAt) {
-        db = row.data; lastUpdatedAt = row.updated_at; renderAll();
+      const workspace = await readWorkspace();
+      if (workspace && workspace.updated_at !== lastUpdatedAt) {
+        db = workspace.data; lastUpdatedAt = workspace.updated_at; renderAll();
       }
     } catch (err) { console.warn('No se pudo actualizar desde la nube:', err.message || err); }
   }
