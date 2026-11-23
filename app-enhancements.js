@@ -229,6 +229,7 @@
   const originalSubmit=document.getElementById('entryForm').onsubmit;
   document.getElementById('entryForm').onsubmit=function(event) {
     const form=this, field=name=>form.elements.namedItem(name);
+    if(form.dataset.stockSubmitBusy==='1'){event.preventDefault();return false;}
     if(document.getElementById('modalTitle').textContent.includes('repuesto')) {
       event.preventDefault(); const id=form.dataset.stockEdit, old=id?db.stockItems.find(x=>x.id===id):null;
       const name=form.elements.stockName.value.trim();if(!name){toast('Ingresá el nombre del repuesto');return false;}
@@ -245,11 +246,11 @@
       if(Number(form.elements.namedItem('paidAmount')?.value||0)>Number(form.elements.namedItem('amount')?.value||0)){event.preventDefault();toast('El importe pagado no puede superar el total');return false;}
       const selected=[...form.querySelectorAll('[data-part]:checked')].map(ch=>{const item=db.stockItems.find(x=>x.id===ch.dataset.part),quantity=Number(form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).value)||0;return {itemId:item.id,name:item.name,quantity,unitCost:Number(item.unitCost||0),unitPrice:Number(item.unitPrice||0)}}); submittedParts=selected;
       const job=editingId?db.jobs.find(j=>j.id===editingId):null, previous=job?.partsUsed||[];
-      for(const p of previous){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)+Number(p.quantity||0);}
-      const shortages=selected.map(p=>({p,item:db.stockItems.find(x=>x.id===p.itemId)})).filter(x=>x.item&&qty(x.item)<x.p.quantity);
-      if(shortages.length){for(const p of previous){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)-Number(p.quantity||0);}toast(`Stock insuficiente: ${shortages.map(x=>x.item.name).join(', ')}`);return false;}
+      form.dataset.stockPartsBefore=JSON.stringify(previous);
+      const returnedByItem=new Map();for(const p of previous)returnedByItem.set(p.itemId,(returnedByItem.get(p.itemId)||0)+Number(p.quantity||0));
+      const shortages=selected.map(p=>({p,item:db.stockItems.find(x=>x.id===p.itemId),available:qty(db.stockItems.find(x=>x.id===p.itemId)||{quantity:0})+(returnedByItem.get(p.itemId)||0)})).filter(x=>!x.item||x.available<x.p.quantity);
+      if(shortages.length){toast(`Stock insuficiente: ${shortages.map(x=>`${x.item?.name||x.p.name} (disponible ${x.available}, solicitado ${x.p.quantity})`).join(', ')}`);return false;}
       const hidden=form.elements.namedItem('partsUsed');if(hidden)hidden.remove();const input=document.createElement('input');input.type='hidden';input.name='partsUsed';input.value=JSON.stringify(selected);form.appendChild(input);
-      for(const p of selected){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)-p.quantity;}
     }
     if(type==='expense') {
       const oldId=editingId, old=oldId?db.expenses.find(x=>x.id===oldId):null;
@@ -257,17 +258,22 @@
       if(expenseSnapshot.stockItemId&&!db.stockItems.some(x=>x.id===expenseSnapshot.stockItemId)){event.preventDefault();toast('El repuesto seleccionado ya no está disponible. Actualizá la pantalla y volvé a elegirlo.');return false;}
       if(old?.stockItemId){const item=db.stockItems.find(x=>x.id===old.stockItemId);if(item)item.quantity=qty(item)-Number(old.stockQty||0);}
     }
+    form.dataset.stockSubmitBusy='1';
     const result=originalSubmit.call(this,event);
     if(type==='job') {
       const created=db.jobs.find(j=>!beforeIds.has(j.id));const job=editingId?db.jobs.find(j=>j.id===editingId):created;
-      if(job){job.partsUsed=submittedParts;db.stockMoves=db.stockMoves.filter(m=>!(m.type==='usage'&&m.referenceId===job.id));for(const p of job.partsUsed)db.stockMoves.push({id:crypto.randomUUID(),type:'usage',referenceId:job.id,itemId:p.itemId,quantity:-p.quantity,unitCost:p.unitCost,unitPrice:p.unitPrice,date:job.date});save();}
-      else for(const p of submittedParts){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)+p.quantity;}
+      if(job){job.partsUsed=submittedParts;
+        const oldParts=editingId?(form.dataset.stockPartsBefore?JSON.parse(form.dataset.stockPartsBefore):[]):[];
+        for(const p of oldParts){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)+Number(p.quantity||0);}
+        for(const p of submittedParts){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)-Number(p.quantity||0);}
+        db.stockMoves=db.stockMoves.filter(m=>!(m.type==='usage'&&m.referenceId===job.id));for(const p of job.partsUsed)db.stockMoves.push({id:crypto.randomUUID(),type:'usage',referenceId:job.id,itemId:p.itemId,quantity:-p.quantity,unitCost:p.unitCost,unitPrice:p.unitPrice,date:job.date});save();}
     }
     if(type==='expense') {
       const created=db.expenses.find(x=>!beforeExpenseIds.has(x.id));const expense=expenseSnapshot.oldId?db.expenses.find(x=>x.id===expenseSnapshot.oldId):created;
       if(expense){if(expenseSnapshot.stockItemId){const item=db.stockItems.find(x=>x.id===expenseSnapshot.stockItemId),quantity=expenseSnapshot.stockQty;if(!item){toast('No se encontró el repuesto seleccionado; revisá el stock y volvé a guardar.');return false;}if(quantity>0){const oldQuantity=qty(item),oldCost=Number(item.unitCost||0),cost=Number(expense.amount||0)/quantity;item.quantity=oldQuantity+quantity;item.unitCost=item.quantity>0?((oldQuantity*oldCost)+(cost*quantity))/item.quantity:cost;expense.stockItemId=item.id;expense.stockQty=quantity;expense.stockUnitCost=cost;}}
         expense.jobRef=expenseSnapshot.jobRef;db.stockMoves=db.stockMoves.filter(m=>!(m.type==='purchase'&&m.referenceId===expense.id));if(expense.stockItemId)db.stockMoves.push({id:crypto.randomUUID(),type:'purchase',referenceId:expense.id,itemId:expense.stockItemId,quantity:Number(expense.stockQty||0),unitCost:Number(expense.stockUnitCost||0),date:expense.date});save();}
     }
+    setTimeout(()=>{delete form.dataset.stockSubmitBusy;delete form.dataset.stockPartsBefore;},0);
     return result;
   };
   window.deleteStockItem=function(id){const item=db.stockItems.find(x=>x.id===id);if(!item)return;if(db.stockMoves.some(m=>m.itemId===id)||db.jobs.some(j=>(j.partsUsed||[]).some(p=>p.itemId===id))||db.expenses.some(e=>e.stockItemId===id)){toast('No se puede eliminar: este repuesto tiene movimientos asociados.');return;}if(confirm('¿Eliminar este repuesto?')){db.stockItems=db.stockItems.filter(x=>x.id!==id);save();}};

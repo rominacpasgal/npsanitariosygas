@@ -9,7 +9,7 @@
   const migrationActions = document.getElementById('migrationActions');
   const passwordModal = document.getElementById('passwordModal');
   let client = null, user = null, membership = null, loaded = false, loading = false;
-  let lastUpdatedAt = null, saveTimer = null, saving = false, dirtyAgain = false;
+  let lastUpdatedAt = null, saveTimer = null, saving = false, dirtyAgain = false, hasPendingSave = false;
   let passwordMode = 'change';
 
   function showGate(text, mode = 'login') {
@@ -133,6 +133,7 @@
   }
   window.queueCloudSave = () => {
     if (!user || !loaded) return;
+    hasPendingSave = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
       saveTimer = null;
@@ -140,10 +141,12 @@
       saving = true;
       try {
         await writeWorkspace(db);
+        hasPendingSave = false;
         const t = document.getElementById('toast');
         t.textContent = 'Cambios guardados en la nube'; t.style.display = 'block';
         setTimeout(() => t.style.display = 'none', 1600);
       } catch (err) {
+        hasPendingSave = true;
         alert(`No se pudieron guardar los cambios en la nube. Descargá un respaldo antes de recargar.\n\n${err.message || err}`);
       } finally {
         saving = false;
@@ -151,6 +154,9 @@
       }
     }, 500);
   };
+  window.addEventListener('beforeunload', event => {
+    if (user && loaded && hasPendingSave) { event.preventDefault(); event.returnValue = ''; }
+  });
 
   document.getElementById('signInBtn').onclick = async () => {
     errorBox.textContent = '';
