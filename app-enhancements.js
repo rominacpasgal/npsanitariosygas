@@ -55,7 +55,8 @@
     document.getElementById('jobsTable').innerHTML = rows.length ? rows.map(j => {
       const total = Number(j.amount || 0), paid = Number(j.paidAmount ?? (j.paid ? total : 0));
       const equipment = db.equipment.find(e => e.id === j.equipment);
-      const items = [['Realizado',j.description],['Repuestos y materiales',j.materials],['Partes reparadas',j.repairs],
+      const partsSummary=(j.partsUsed||[]).map(p=>`${p.quantity} ${db.stockItems.find(i=>i.id===p.itemId)?.unit||'u.'} ${p.name} · ${money(Number(p.quantity||0)*Number(p.unitPrice||0))}`).join(', ');
+      const items = [['Realizado',j.description],['Repuestos del stock',partsSummary],['Repuestos y materiales',j.materials],['Partes reparadas',j.repairs],
         ['Insumos',j.consumables],['Equipo',equipment ? [equipment.name,equipment.brand,equipment.model,equipment.installYear,equipment.type].filter(Boolean).join(' · ') : ''],
         ['Garantía',j.warrantyMonths ? `${j.warrantyMonths} meses` : 'No especificada'],['Observaciones',j.notes]].filter(x => x[1]);
       return `<tr><td>${dateFmt(j.date)}<br><span class="muted">${esc(j.time||'')}</span></td><td>${esc(clientName(j.client))}</td>
@@ -101,7 +102,7 @@
     document.getElementById('equipmentHistoryTitle').textContent = `${equipment.name} · Historial de trabajos`;
     document.getElementById('equipmentHistoryBody').innerHTML = jobs.length ? jobs.map(j=>`<div class="row" style="display:block">
       <div class="row-title">${dateFmt(j.date)} · ${esc(j.title||'Trabajo realizado')}</div>
-      <div class="row-desc" style="white-space:normal">${[['Descripción',j.description],['Repuestos/materiales',j.materials],['Partes reparadas',j.repairs],['Insumos',j.consumables],['Garantía',j.warrantyMonths?`${j.warrantyMonths} meses`:'' ],['Observaciones',j.notes]].filter(x=>x[1]).map(x=>`<b>${esc(x[0])}:</b> ${esc(x[1])}`).join('<br>')}</div>
+      <div class="row-desc" style="white-space:normal">${[['Descripción',j.description],['Repuestos del stock',(j.partsUsed||[]).map(p=>`${p.quantity} ${p.name} · cobrado ${money(Number(p.quantity||0)*Number(p.unitPrice||0))} · costo ${money(Number(p.quantity||0)*Number(p.unitCost||0))}`).join(', ')],['Repuestos/materiales',j.materials],['Partes reparadas',j.repairs],['Insumos',j.consumables],['Garantía',j.warrantyMonths?`${j.warrantyMonths} meses`:'' ],['Observaciones',j.notes]].filter(x=>x[1]).map(x=>`<b>${esc(x[0])}:</b> ${esc(x[1])}`).join('<br>')}</div>
     </div>`).join('') : '<div class="empty">Todavía no hay trabajos realizados asociados a este equipo.</div>';
     modal.classList.add('open');
   };
@@ -153,4 +154,135 @@
   };
 
   renderAll();
+})();
+
+/* Inventario: compras vinculables a trabajos y repuestos imputados a cada servicio. */
+(() => {
+  if (!Array.isArray(db.stockItems)) db.stockItems = [];
+  if (!Array.isArray(db.stockMoves)) db.stockMoves = [];
+  const nav = document.querySelector('.nav button[data-page="finanzas"]');
+  if (nav && !document.querySelector('[data-page="stock"]')) {
+    const button = document.createElement('button');
+    button.dataset.page = 'stock'; button.innerHTML = '<span class="ico">▦</span>Stock de repuestos';
+    button.onclick = () => navigate('stock'); nav.after(button);
+  }
+  if (!document.getElementById('page-stock')) {
+    const section = document.createElement('section'); section.className = 'section'; section.id = 'page-stock';
+    section.innerHTML = `<div class="heading"><div><div class="eyebrow">Inventario</div><h1>Stock de repuestos</h1><div class="sub">Controlá existencias, costos de compra y precios cobrados al cliente.</div></div><div class="actions"><button class="btn primary" onclick="openStockItem()">＋ Nuevo repuesto</button><button class="btn" onclick="openForm('expense')">＋ Registrar compra</button></div></div><div class="panel table-wrap"><table class="data-table"><thead><tr><th>Repuesto</th><th>Existencia</th><th>Costo unitario</th><th>Precio al cliente</th><th>Mínimo</th><th>Acciones</th></tr></thead><tbody id="stockTable"></tbody></table></div><div class="info">Al registrar una compra, indicá el repuesto y la cantidad para sumar unidades al stock. Al usar repuestos en un trabajo, se guarda el costo y se agregan al total a cobrar.</div>`;
+    document.querySelector('main .content').appendChild(section);
+  }
+  const baseNavigate = window.navigate;
+  window.navigate = function(page) {
+    if (page !== 'stock') return baseNavigate(page);
+    document.querySelectorAll('.nav button[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+    document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === 'page-stock'));
+    document.getElementById('crumb').textContent = 'Stock de repuestos';
+    document.getElementById('sidebar').classList.remove('open'); renderStock();
+  };
+  const qty = item => Number(item.quantity || 0);
+  window.renderStock = function() {
+    const target = document.getElementById('stockTable'); if (!target) return;
+    target.innerHTML = db.stockItems.length ? [...db.stockItems].sort((a,b)=>a.name.localeCompare(b.name,'es')).map(item => {
+      const low = Number(item.minimum || 0) > 0 && qty(item) <= Number(item.minimum || 0);
+      return `<tr><td><b>${esc(item.name)}</b>${item.code?`<br><span class="muted">${esc(item.code)}</span>`:''}</td><td><b>${qty(item)}</b> ${esc(item.unit||'u.')}${low?' <span class="badge pending">Stock bajo</span>':''}</td><td>${money(item.unitCost)}</td><td>${money(item.unitPrice)}</td><td>${Number(item.minimum||0)}</td><td><button class="btn" style="padding:6px 9px" onclick="openStockItem('${item.id}')">Editar</button> <button class="btn" style="padding:6px 9px" onclick="deleteStockItem('${item.id}')">Eliminar</button></td></tr>`;
+    }).join('') : '<tr><td colspan="6" class="empty">Todavía no hay repuestos. Agregá uno o vinculá una compra a un artículo nuevo.</td></tr>';
+  };
+  window.openStockItem = function(id=null) {
+    const old = id ? db.stockItems.find(x=>x.id===id) : null;
+    const modal = document.getElementById('modalBack'), fields = document.getElementById('formFields');
+    document.getElementById('modalTitle').textContent = old ? 'Editar repuesto' : 'Nuevo repuesto';
+    fields.innerHTML = `<div class="field"><label>Nombre del repuesto</label><input name="stockName" required></div><div class="field"><label>Código (opcional)</label><input name="stockCode"></div><div class="field"><label>Unidad</label><input name="stockUnit" value="u."></div><div class="field"><label>Existencia inicial</label><input name="stockQty" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Costo por unidad ($)</label><input name="stockCost" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Precio al cliente ($)</label><input name="stockPrice" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Alerta de stock mínimo</label><input name="stockMin" type="number" min="0" step="0.01" value="0"></div>`;
+    if(old){const f=document.getElementById('entryForm');f.elements.stockName.value=old.name;f.elements.stockCode.value=old.code||'';f.elements.stockUnit.value=old.unit||'u.';f.elements.stockQty.value=qty(old);f.elements.stockQty.disabled=true;f.elements.stockCost.value=old.unitCost||0;f.elements.stockPrice.value=old.unitPrice||0;f.elements.stockMin.value=old.minimum||0;}
+    document.getElementById('entryForm').dataset.stockEdit=id||''; modal.classList.add('open');
+  };
+  const originalOpen = window.openForm;
+  window.openForm = function(type,id=null) {
+    if(type==='stockItem') return openStockItem(id);
+    originalOpen(type,id);
+    const form=document.getElementById('entryForm');
+    if(type==='expense') {
+      const clientField=form.elements.namedItem('client');
+      const jobOptions=db.jobs.map(j=>`<option value="${j.id}">${dateFmt(j.date)} · ${esc(clientName(j.client))} · ${esc(j.title||'Trabajo')}</option>`).join('');
+      const itemOptions=db.stockItems.map(i=>`<option value="${i.id}">${esc(i.name)} (stock: ${qty(i)})</option>`).join('');
+      const fields=document.getElementById('formFields');
+      fields.insertAdjacentHTML('beforeend',`<div class="field"><label>Asociar a un trabajo (opcional)</label><select name="jobRef"><option value="">Sin asociar</option>${jobOptions}</select></div><div class="field"><label>Sumar esta compra al stock (opcional)</label><select name="stockItemId"><option value="">No es un repuesto de stock</option>${itemOptions}</select></div><div class="field"><label>Cantidad comprada (unidades enteras)</label><input name="stockQty" type="number" min="0" step="1" value="0" inputmode="numeric"></div>`);
+      const expense=id?db.expenses.find(e=>e.id===id):null;
+      if(expense){form.elements.jobRef.value=expense.jobRef||'';form.elements.stockItemId.value=expense.stockItemId||'';form.elements.stockQty.value=expense.stockQty||0;}
+    }
+    if(type==='job') {
+      const amount=form.elements.namedItem('amount');
+      const label=[...form.querySelectorAll('label')].find(l=>l.parentElement.querySelector('[name="amount"]'));
+      if(label) label.textContent='Mano de obra y otros cargos ($)';
+      const job=id?db.jobs.find(j=>j.id===id):null;
+      const parts=job?.partsUsed||[];
+      const rows=db.stockItems.map(item=>{
+        const used=parts.find(p=>p.itemId===item.id);return `<label style="display:grid;grid-template-columns:24px 1fr 85px 100px;gap:7px;align-items:center;padding:7px;border-bottom:1px solid var(--line);font-weight:400"><input type="checkbox" data-part="${item.id}" ${used?'checked':''}><span>${esc(item.name)}<br><small class="muted">Disponible: ${qty(item)} · Costo ${money(item.unitCost)} · Cliente ${money(item.unitPrice)}</small></span><input type="number" data-part-qty="${item.id}" min="0.01" step="0.01" value="${used?.quantity||1}" ${used?'':'disabled'} aria-label="Cantidad"><span>${money(item.unitPrice)} /u.</span></label>`;
+      }).join('')||'<div class="muted">No hay repuestos cargados en el stock.</div>';
+      document.getElementById('formFields').insertAdjacentHTML('beforeend',`<div class="field full"><label>Repuestos del stock utilizados</label><div style="border:1px solid var(--line);border-radius:8px;padding:5px">${rows}</div><small class="muted">Al guardar se descuenta del inventario y se suma el precio al total del trabajo.</small></div>`);
+      form.querySelectorAll('[data-part]').forEach(ch=>ch.onchange=()=>{form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).disabled=!ch.checked;updateJobTotal()});
+      form.querySelectorAll('[data-part-qty]').forEach(input=>input.oninput=updateJobTotal);
+      if(amount) amount.dataset.base=String(Math.max(0,Number(job?.amount||0)-parts.reduce((n,p)=>n+Number(p.quantity||0)*Number(p.unitPrice||0),0)));
+      if(amount) amount.oninput=()=>{amount.dataset.base=amount.value;updateJobTotal()};
+      function updateJobTotal(){const base=Number(amount?.dataset.base??amount?.value)||0;const sell=[...form.querySelectorAll('[data-part]:checked')].reduce((n,ch)=>n+(Number(form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).value)||0)*Number(db.stockItems.find(x=>x.id===ch.dataset.part)?.unitPrice||0),0);if(amount)amount.value=String(base+sell)}
+    }
+  };
+  const originalSubmit=document.getElementById('entryForm').onsubmit;
+  document.getElementById('entryForm').onsubmit=function(event) {
+    const form=this;
+    if(document.getElementById('modalTitle').textContent.includes('repuesto')) {
+      event.preventDefault(); const id=form.dataset.stockEdit, old=id?db.stockItems.find(x=>x.id===id):null;
+      const name=form.elements.stockName.value.trim();if(!name){toast('Ingresá el nombre del repuesto');return false;}
+      const item=old||{id:crypto.randomUUID(),quantity:0};item.name=name;item.code=form.elements.stockCode.value.trim();item.unit=form.elements.stockUnit.value.trim()||'u.';item.unitCost=Number(form.elements.stockCost.value||0);item.unitPrice=Number(form.elements.stockPrice.value||0);item.minimum=Number(form.elements.stockMin.value||0);
+      if(!old){item.quantity=Number(form.elements.stockQty.value||0);db.stockItems.push(item);}save();closeModal();form.reset();delete form.dataset.stockEdit;toast(old?'Repuesto actualizado':'Repuesto agregado');return false;
+    }
+    const type=formType, beforeIds=new Set(db.jobs.map(j=>j.id)), beforeExpenseIds=new Set(db.expenses.map(x=>x.id)), editingId=typeof currentEditId==='undefined'?null:currentEditId;
+    if(type==='expense'&&form.elements.stockItemId?.value&&(!Number.isInteger(Number(form.elements.stockQty?.value))||Number(form.elements.stockQty?.value)<1)){
+      event.preventDefault();toast('Ingresá una cantidad entera mayor a cero para sumar al stock.');return false;
+    }
+    let submittedParts=[], expenseSnapshot=null;
+    if(type==='job') {
+      if(!form.elements.namedItem('client')?.value){event.preventDefault();toast('Seleccioná un cliente');return false;}
+      if(Number(form.elements.namedItem('paidAmount')?.value||0)>Number(form.elements.namedItem('amount')?.value||0)){event.preventDefault();toast('El importe pagado no puede superar el total');return false;}
+      const selected=[...form.querySelectorAll('[data-part]:checked')].map(ch=>{const item=db.stockItems.find(x=>x.id===ch.dataset.part),quantity=Number(form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).value)||0;return {itemId:item.id,name:item.name,quantity,unitCost:Number(item.unitCost||0),unitPrice:Number(item.unitPrice||0)}}); submittedParts=selected;
+      const job=editingId?db.jobs.find(j=>j.id===editingId):null, previous=job?.partsUsed||[];
+      for(const p of previous){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)+Number(p.quantity||0);}
+      const shortages=selected.map(p=>({p,item:db.stockItems.find(x=>x.id===p.itemId)})).filter(x=>x.item&&qty(x.item)<x.p.quantity);
+      if(shortages.length){for(const p of previous){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)-Number(p.quantity||0);}toast(`Stock insuficiente: ${shortages.map(x=>x.item.name).join(', ')}`);return false;}
+      const hidden=form.elements.namedItem('partsUsed');if(hidden)hidden.remove();const input=document.createElement('input');input.type='hidden';input.name='partsUsed';input.value=JSON.stringify(selected);form.appendChild(input);
+      for(const p of selected){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)-p.quantity;}
+    }
+    if(type==='expense') {
+      const oldId=editingId, old=oldId?db.expenses.find(x=>x.id===oldId):null;
+      expenseSnapshot={oldId,jobRef:form.elements.jobRef?.value||'',stockItemId:form.elements.stockItemId?.value||'',stockQty:Number(form.elements.stockQty?.value||0)};
+      if(old?.stockItemId){const item=db.stockItems.find(x=>x.id===old.stockItemId);if(item)item.quantity=qty(item)-Number(old.stockQty||0);}
+    }
+    const result=originalSubmit.call(this,event);
+    if(type==='job') {
+      const created=db.jobs.find(j=>!beforeIds.has(j.id));const job=editingId?db.jobs.find(j=>j.id===editingId):created;
+      if(job){job.partsUsed=submittedParts;db.stockMoves=db.stockMoves.filter(m=>!(m.type==='usage'&&m.referenceId===job.id));for(const p of job.partsUsed)db.stockMoves.push({id:crypto.randomUUID(),type:'usage',referenceId:job.id,itemId:p.itemId,quantity:-p.quantity,unitCost:p.unitCost,unitPrice:p.unitPrice,date:job.date});save();}
+      else for(const p of submittedParts){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)+p.quantity;}
+    }
+    if(type==='expense') {
+      const created=db.expenses.find(x=>!beforeExpenseIds.has(x.id));const expense=expenseSnapshot.oldId?db.expenses.find(x=>x.id===expenseSnapshot.oldId):created;
+      if(expense){if(expenseSnapshot.stockItemId){const item=db.stockItems.find(x=>x.id===expenseSnapshot.stockItemId),quantity=expenseSnapshot.stockQty;if(item&&quantity>0){const oldQuantity=qty(item),oldCost=Number(item.unitCost||0),cost=Number(expense.amount||0)/quantity;item.quantity=oldQuantity+quantity;item.unitCost=item.quantity>0?((oldQuantity*oldCost)+(cost*quantity))/item.quantity:cost;expense.stockItemId=item.id;expense.stockQty=quantity;expense.stockUnitCost=cost;}}
+        expense.jobRef=expenseSnapshot.jobRef;db.stockMoves=db.stockMoves.filter(m=>!(m.type==='purchase'&&m.referenceId===expense.id));if(expense.stockItemId)db.stockMoves.push({id:crypto.randomUUID(),type:'purchase',referenceId:expense.id,itemId:expense.stockItemId,quantity:Number(expense.stockQty||0),unitCost:Number(expense.stockUnitCost||0),date:expense.date});save();}
+    }
+    return result;
+  };
+  window.deleteStockItem=function(id){const item=db.stockItems.find(x=>x.id===id);if(!item)return;if(db.stockMoves.some(m=>m.itemId===id)||db.jobs.some(j=>(j.partsUsed||[]).some(p=>p.itemId===id))||db.expenses.some(e=>e.stockItemId===id)){toast('No se puede eliminar: este repuesto tiene movimientos asociados.');return;}if(confirm('¿Eliminar este repuesto?')){db.stockItems=db.stockItems.filter(x=>x.id!==id);save();}};
+  const oldDelete=window.deleteItem;
+  window.deleteItem=function(type,id){if(type==='jobs'){const job=db.jobs.find(j=>j.id===id);for(const p of job?.partsUsed||[]){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)+Number(p.quantity||0);}db.stockMoves=db.stockMoves.filter(m=>!(m.type==='usage'&&m.referenceId===id));}if(type==='expenses'){const e=db.expenses.find(x=>x.id===id);if(e?.stockItemId){const item=db.stockItems.find(x=>x.id===e.stockItemId);if(item)item.quantity=Math.max(0,qty(item)-Number(e.stockQty||0));}db.stockMoves=db.stockMoves.filter(m=>!(m.type==='purchase'&&m.referenceId===id));}oldDelete(type,id);};
+  const priorRenderAll=window.renderAll;
+  window.renderAll=function(){priorRenderAll();renderStock();};
+  const priorRenderFinance=window.renderFinance;
+  window.renderFinance=function(){
+    priorRenderFinance();
+    for(const expense of db.expenses.filter(e=>e.jobRef)){
+      const job=db.jobs.find(j=>j.id===expense.jobRef);if(!job)continue;
+      const button=[...document.querySelectorAll('#financeTable button')].find(b=>b.getAttribute('onclick')?.includes(expense.id));
+      const cell=button?.closest('tr')?.children?.[2];
+      if(cell)cell.textContent+=` · Trabajo: ${job.title||'Trabajo'} (${dateFmt(job.date)})`;
+    }
+  };
+  renderStock();
 })();

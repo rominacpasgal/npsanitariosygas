@@ -42,7 +42,12 @@
     document.getElementById('cloudSignOut').onclick = async () => { await client.auth.signOut(); };
   }
   function showError(err) { errorBox.textContent = err?.message || String(err || 'Ocurrió un error.'); }
-  function emptyData() { return { clients: [], jobs: [], equipment: [], quotes: [], expenses: [] }; }
+  function emptyData() { return { clients: [], jobs: [], equipment: [], quotes: [], expenses: [], stockItems: [], stockMoves: [] }; }
+  function normalizeData(data) {
+    const normalized = { ...emptyData(), ...(data || {}) };
+    for (const key of Object.keys(emptyData())) if (!Array.isArray(normalized[key])) normalized[key] = [];
+    return normalized;
+  }
 
   async function readMembership() {
     const { data, error } = await client.from('np_admin_members').select('user_id,password_initialized')
@@ -90,7 +95,7 @@
       if (!workspace.migration_completed) {
         showGate('Elegí importar un respaldo JSON o empezar con el espacio compartido vacío.', 'migration');
       } else {
-        db = workspace.data || emptyData();
+        db = normalizeData(workspace.data);
         loaded = true;
         renderAll();
         showApp();
@@ -107,7 +112,7 @@
       }).eq('id', WORKSPACE_ID);
       if (error) throw error;
       const workspace = await readWorkspace();
-      db = workspace.data;
+      db = normalizeData(workspace.data);
       lastUpdatedAt = workspace.updated_at;
       loaded = true;
       renderAll();
@@ -179,7 +184,7 @@
       if (!workspace.migration_completed) {
         showGate('Tu contraseña está lista. Elegí importar un respaldo JSON o empezar con el espacio compartido vacío.', 'migration');
       } else {
-        db = workspace.data || emptyData(); loaded = true; renderAll(); showApp();
+        db = normalizeData(workspace.data); loaded = true; renderAll(); showApp();
       }
     } catch (err) { showError(err); }
   };
@@ -192,7 +197,7 @@
       if (!['clients','jobs','equipment','quotes','expenses'].every(k => Array.isArray(backup[k]))) {
         throw new Error('El archivo no tiene el formato de respaldo de NP Sanitarios y Gas.');
       }
-      await initializeWorkspace(Object.fromEntries(['clients','jobs','equipment','quotes','expenses'].map(k => [k, backup[k]])));
+      await initializeWorkspace(normalizeData(backup));
     } catch (err) { errorBox.textContent = err.message || String(err); }
   };
   document.getElementById('cancelPasswordBtn').onclick = () => { passwordModal.style.display = 'none'; };
@@ -252,7 +257,7 @@
     try {
       const workspace = await readWorkspace();
       if (workspace && workspace.updated_at !== lastUpdatedAt) {
-        db = workspace.data; lastUpdatedAt = workspace.updated_at; renderAll();
+        db = normalizeData(workspace.data); lastUpdatedAt = workspace.updated_at; renderAll();
       }
     } catch (err) { console.warn('No se pudo actualizar desde la nube:', err.message || err); }
   }
