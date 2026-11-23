@@ -3,6 +3,13 @@
   if (updatedFields.quote && !updatedFields.quote.some(f => f[0] === 'extra')) {
     updatedFields.quote.push(['extra', 'Comentario adicional (opcional)', 'textarea', 1]);
   }
+  if (updatedFields.quote && !updatedFields.quote.some(f => f[0] === 'title')) {
+    updatedFields.quote.splice(1, 0, ['title', 'Título del trabajo', 'text', 1]);
+  }
+  if (updatedFields.quote) {
+    const detailField = updatedFields.quote.find(f => f[0] === 'detail');
+    if (detailField) detailField[1] = 'Materiales y mano de obra / detalle del presupuesto';
+  }
   const originalOpenForm = window.openForm;
   window.openForm = function (type, id = null) {
     originalOpenForm(type, id);
@@ -104,10 +111,13 @@
     const rows = [...db.quotes].reverse();
     document.getElementById('quotesTable').innerHTML = rows.length ? rows.map(q => {
       const customer = db.clients.find(c=>c.id===q.client);
-      const message = `Hola ${customer?.name||''}, te comparto el presupuesto de NP Sanitarios y Gas.\n\nDetalle: ${q.detail||''}\nTotal: ${money(q.amount)}\nValidez: ${q.valid ? dateFmt(q.valid) : 'sin fecha definida'}${q.extra?`\n\nInformación adicional: ${q.extra}`:''}\n\nSi estás de acuerdo, respondeme por este medio.\nNicolás Pérez`;
+      const firstName = (customer?.name || '').trim().split(/\s+/)[0] || 'buen día';
+      const title = (q.title || (q.detail || 'Trabajo solicitado').split(/\r?\n/)[0]).replace(/[.!?]+$/,'');
+      const extra = q.extra ? `\n\nInformación adicional: ${q.extra}` : '';
+      const message = `Hola, ${firstName}. ¡Buen día!\n\nDesde NP Sanitarios y Gas te compartimos el presupuesto solicitado:\n\nDetalle del trabajo: ${title}.\n\nMateriales y mano de obra:\n\n${q.detail || ''}${extra}\n\nTOTAL: ${money(q.amount)}\n\nValidez del presupuesto: ${q.valid ? dateFmt(q.valid) : 'sin fecha definida'}.\n\nSi estás de acuerdo con el presupuesto, podés responder a este mensaje para coordinar la realización del trabajo.\n\n¡Muchas gracias por tu consulta y por confiar en nosotros!\n\nNicolás Pérez\nNP Sanitarios y Gas`;
       const whatsapp = customer?.phone ? `<a class="btn" style="padding:6px 9px" target="_blank" rel="noopener" href="${waLink(customer.phone)}?text=${encodeURIComponent(message)}">Enviar por WhatsApp</a>` : '<span class="muted">Sin WhatsApp</span>';
       const schedule = q.status==='Aceptado' ? (q.jobId ? '<span class="badge done">Trabajo agendado</span>' : `<button class="btn primary" style="padding:6px 9px" onclick="scheduleQuote('${q.id}')">Agendar trabajo</button>`) : '';
-      return `<tr><td>${dateFmt(q.date)}</td><td>${esc(clientName(q.client))}</td><td>${esc(q.detail)}${q.extra?`<br><span class="muted">${esc(q.extra)}</span>`:''}</td>
+      return `<tr><td>${dateFmt(q.date)}</td><td>${esc(clientName(q.client))}</td><td>${q.title?`<b>${esc(q.title)}</b><br>`:''}${esc(q.detail)}${q.extra?`<br><span class="muted">${esc(q.extra)}</span>`:''}</td>
         <td>${dateFmt(q.valid)}</td><td><span class="badge ${q.status==='Pendiente'?'pending':''}">${esc(q.status)}</span></td><td>${money(q.amount)}</td>
         <td><div style="display:grid;gap:5px">${whatsapp}${schedule}<button class="btn" style="padding:6px 9px" onclick="openForm('quote','${q.id}')">Editar</button><button class="btn" style="padding:6px 9px" onclick="deleteItem('quotes','${q.id}')">Eliminar</button></div></td></tr>`;
     }).join('') : '<tr><td colspan="7" class="empty">Todavía no hay presupuestos registrados.</td></tr>';
@@ -118,7 +128,7 @@
     window.openForm('job');
     const form = document.getElementById('entryForm');
     form.elements.namedItem('client').value = quote.client;
-    form.elements.namedItem('title').value = `Presupuesto aprobado: ${(quote.detail||'Trabajo').slice(0,55)}`;
+    form.elements.namedItem('title').value = `Presupuesto aprobado: ${(quote.title||quote.detail||'Trabajo').slice(0,55)}`;
     form.elements.namedItem('description').value = quote.detail||'';
     form.elements.namedItem('notes').value = quote.extra||'';
     form.elements.namedItem('amount').value = Number(quote.amount||0);
