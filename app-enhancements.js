@@ -19,6 +19,7 @@
     if (status && ![...status.options].some(o => o.value === 'Pendiente')) {
       status.insertAdjacentHTML('afterbegin', '<option>Pendiente</option>');
     }
+    if (status && ![...status.options].some(o => o.value === 'Pagado')) status.insertAdjacentHTML('beforeend', '<option>Pagado</option>');
     const job = id ? db.jobs.find(j => j.id === id) : null;
     if (job && status) status.value = job.status || 'Agendado';
     let quoteId = form.elements.namedItem('quoteId');
@@ -45,6 +46,7 @@
   if (filter && ![...filter.options].some(o => o.value === 'Pendiente')) {
     filter.insertAdjacentHTML('beforeend', '<option>Pendiente</option>');
   }
+  if (filter && ![...filter.options].some(o => o.value === 'Pagado')) filter.insertAdjacentHTML('beforeend', '<option>Pagado</option>');
 
   window.renderJobs = function (query = '') {
     const state = document.getElementById('jobFilter')?.value || '';
@@ -61,7 +63,7 @@
         ['Garantía',j.warrantyMonths ? `${j.warrantyMonths} meses` : 'No especificada'],['Observaciones',j.notes]].filter(x => x[1]);
       return `<tr><td>${dateFmt(j.date)}<br><span class="muted">${esc(j.time||'')}</span></td><td>${esc(clientName(j.client))}</td>
         <td><b>${esc(j.title||'Trabajo')}</b><br><details><summary class="link">Ver registro completo</summary><div class="row-desc" style="white-space:normal">${items.map(x=>`<b>${esc(x[0])}:</b> ${esc(x[1])}`).join('<br>')}</div></details></td>
-        <td><select class="filter" style="padding:5px" onchange="setStatus('${j.id}',this.value)">${['Pendiente','Agendado','En curso','Completado','Pendiente de cobro'].map(s=>`<option ${j.status===s?'selected':''}>${s}</option>`).join('')}</select></td>
+        <td><select class="filter" style="padding:5px" onchange="setStatus('${j.id}',this.value)">${['Pendiente','Agendado','En curso','Completado','Pendiente de cobro','Pagado'].map(s=>`<option ${(total>0&&paid>=total?'Pagado':j.status)===s?'selected':''}>${s}</option>`).join('')}</select></td>
         <td>${money(total)}<br><span class="muted">Saldo: ${money(Math.max(0,total-paid))}</span></td>
         <td><button class="btn" style="padding:6px 9px" onclick="openForm('job','${j.id}')">Editar</button><br><button class="btn" style="padding:6px 9px;margin-top:5px" onclick="addPayment('${j.id}')">Anotar pago</button> <button class="btn" style="padding:6px 9px;margin-top:5px" onclick="deleteItem('jobs','${j.id}')">Eliminar</button></td></tr>`;
     }).join('') : '<tr><td colspan="6" class="empty">Todavía no hay trabajos registrados.</td></tr>';
@@ -69,19 +71,33 @@
 
   window.setStatus = function (id, status) {
     const job = db.jobs.find(j => j.id === id); if (!job) return;
+    if (status === 'Pagado') {
+      const total = Number(job.amount || 0), previous = Number(job.paidAmount ?? (job.paid ? total : 0));
+      if (total <= 0) { toast('Ingresá primero el importe total del trabajo para marcarlo como pagado.'); renderJobs(); return; }
+      job.payments = paymentsFor(job).map(p => ({...p}));
+      if (total > previous) job.payments.push({date:iso(),amount:total-previous});
+      job.paidAmount = total; job.paid = true;
+    }
     job.status = status;
-    if (['Completado','Pendiente de cobro'].includes(status)) {
+    if (['Completado','Pendiente de cobro','Pagado'].includes(status)) {
       const equipment = db.equipment.find(e => e.id === job.equipment);
       if (equipment && (!equipment.last || equipment.last < job.date)) equipment.last = job.date;
     }
     save();
+  };
+  const originalAddPayment=window.addPayment;
+  window.addPayment=function(id){
+    originalAddPayment(id);
+    const job=db.jobs.find(j=>j.id===id);if(!job)return;
+    const total=Number(job.amount||0),paid=Number(job.paidAmount??(job.paid?total:0));
+    if(total>0&&paid>=total&&job.status!=='Pagado'){job.status='Pagado';save();}
   };
 
   window.renderEquipment = function (query = '') {
     const rows = db.equipment.filter(e => !query || [e.name,clientName(e.client),e.brand,e.model,e.serial,e.type]
       .join(' ').toLowerCase().includes(query.toLowerCase()));
     document.getElementById('equipmentTable').innerHTML = rows.length ? rows.map(e => {
-      const completed = db.jobs.filter(j => j.equipment === e.id && ['Completado','Pendiente de cobro'].includes(j.status));
+      const completed = db.jobs.filter(j => j.equipment === e.id && ['Completado','Pendiente de cobro','Pagado'].includes(j.status));
       const last = [e.last,...completed.map(j => j.date)].filter(Boolean).sort((a,b)=>b.localeCompare(a))[0] || '';
       return `<tr><td><b>${esc(e.name)}</b><br><span class="muted">${esc(e.observations||e.notes||'')}</span></td>
         <td>${esc(clientName(e.client))}</td><td>${esc(e.type||'—')}</td><td>${esc([e.brand,e.model].filter(Boolean).join(' / ')||'—')}</td>
@@ -97,7 +113,7 @@
       modal.innerHTML = '<div class="modal"><div class="modal-head"><h2 id="equipmentHistoryTitle"></h2><button class="x" onclick="closeEquipmentHistory()">×</button></div><div class="modal-body" id="equipmentHistoryBody"></div><div class="modal-foot"><button class="btn" onclick="closeEquipmentHistory()">Cerrar</button></div></div>';
       modal.addEventListener('click',e=>{if(e.target===modal)closeEquipmentHistory()}); document.body.appendChild(modal);
     }
-    const jobs = db.jobs.filter(j=>j.equipment===equipmentId && ['Completado','Pendiente de cobro'].includes(j.status))
+    const jobs = db.jobs.filter(j=>j.equipment===equipmentId && ['Completado','Pendiente de cobro','Pagado'].includes(j.status))
       .sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.time||'').localeCompare(a.time||''));
     document.getElementById('equipmentHistoryTitle').textContent = `${equipment.name} · Historial de trabajos`;
     document.getElementById('equipmentHistoryBody').innerHTML = jobs.length ? jobs.map(j=>`<div class="row" style="display:block">
@@ -196,6 +212,14 @@
     document.getElementById('entryForm').dataset.stockEdit=id||''; modal.classList.add('open');
   };
   const originalOpen = window.openForm;
+  const dateToDisplay = value => /^\d{4}-\d{2}-\d{2}$/.test(value||'') ? value.split('-').reverse().join('/') : (value||'');
+  const dateToISO = value => {
+    const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((value||'').trim());
+    if (!match) return null;
+    const [,day,month,year] = match, check = new Date(Number(year),Number(month)-1,Number(day));
+    if(check.getFullYear()!==Number(year)||check.getMonth()!==Number(month)-1||check.getDate()!==Number(day)) return null;
+    return `${year}-${month}-${day}`;
+  };
   window.openForm = function(type,id=null) {
     if(type==='stockItem') return openStockItem(id);
     originalOpen(type,id);
@@ -210,20 +234,36 @@
       if(expense){form.elements.jobRef.value=expense.jobRef||'';form.elements.stockItemId.value=expense.stockItemId||'';form.elements.stockQty.value=expense.stockQty||0;}
     }
     if(type==='job') {
+      const clientSelect=form.elements.namedItem('client'),equipmentSelect=form.elements.namedItem('equipment');
+      if(clientSelect&&equipmentSelect){
+        const refreshEquipment=(clientId,keepId='')=>{
+          const options=db.equipment.filter(e=>e.client===clientId);
+          equipmentSelect.innerHTML='<option value="">No especificado</option>'+options.map(e=>`<option value="${e.id}">${esc(clientName(e.client))} · ${esc(e.name)} ${esc(e.brand||'')}</option>`).join('');
+          equipmentSelect.value=options.some(e=>e.id===keepId)?keepId:'';
+        };
+        refreshEquipment(clientSelect.value,equipmentSelect.value);
+        clientSelect.addEventListener('change',()=>refreshEquipment(clientSelect.value,''));
+      }
+      const dateInput=form.elements.namedItem('date');
+      if(dateInput){const currentDate=dateInput.value;dateInput.type='text';dateInput.inputMode='numeric';dateInput.placeholder='dd/mm/aaaa';dateInput.autocomplete='off';dateInput.value=dateToDisplay(currentDate);}
+      const statusSelect=form.elements.namedItem('status');
+      if(statusSelect&&!Array.from(statusSelect.options).some(o=>o.value==='Pagado'))statusSelect.insertAdjacentHTML('beforeend','<option>Pagado</option>');
+      if(statusSelect){statusSelect.addEventListener('change',()=>{if(statusSelect.value==='Pagado'&&form.elements.namedItem('paidAmount'))form.elements.namedItem('paidAmount').value=form.elements.namedItem('amount')?.value||'0';});}
       const amount=form.elements.namedItem('amount');
       const label=[...form.querySelectorAll('label')].find(l=>l.parentElement.querySelector('[name="amount"]'));
       if(label) label.textContent='Mano de obra y otros cargos ($)';
       const job=id?db.jobs.find(j=>j.id===id):null;
       const parts=job?.partsUsed||[];
-      const rows=db.stockItems.map(item=>{
+      const visibleItems=db.stockItems.filter(item=>qty(item)>0);
+      const rows=visibleItems.map(item=>{
         const used=parts.find(p=>p.itemId===item.id);return `<label style="display:grid;grid-template-columns:24px 1fr 85px 100px;gap:7px;align-items:center;padding:7px;border-bottom:1px solid var(--line);font-weight:400"><input type="checkbox" data-part="${item.id}" ${used?'checked':''}><span>${esc(item.name)}<br><small class="muted">Disponible: ${qty(item)} · Costo ${money(item.unitCost)} · Cliente ${money(item.unitPrice)}</small></span><input type="number" data-part-qty="${item.id}" min="0.01" step="0.01" value="${used?.quantity||1}" ${used?'':'disabled'} aria-label="Cantidad"><span>${money(item.unitPrice)} /u.</span></label>`;
-      }).join('')||'<div class="muted">No hay repuestos cargados en el stock.</div>';
-      document.getElementById('formFields').insertAdjacentHTML('beforeend',`<div class="field full"><label>Repuestos del stock utilizados</label><div style="border:1px solid var(--line);border-radius:8px;padding:5px">${rows}</div><small class="muted">Al guardar se descuenta del inventario y se suma el precio al total del trabajo.</small></div>`);
+      }).join('')||'<div class="muted">No hay repuestos disponibles en stock.</div>';
+      document.getElementById('formFields').insertAdjacentHTML('beforeend',`<div class="field full"><label>Repuestos del stock utilizados</label><div style="border:1px solid var(--line);border-radius:8px;padding:5px">${rows}</div><small class="muted">Al guardar se descuenta del inventario y se suma el precio al total del trabajo. Los repuestos ya asociados a este trabajo se conservan al editar, aunque se hayan agotado.</small></div>`);
       form.querySelectorAll('[data-part]').forEach(ch=>ch.onchange=()=>{form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).disabled=!ch.checked;updateJobTotal()});
       form.querySelectorAll('[data-part-qty]').forEach(input=>input.oninput=updateJobTotal);
       if(amount) amount.dataset.base=String(Math.max(0,Number(job?.amount||0)-parts.reduce((n,p)=>n+Number(p.quantity||0)*Number(p.unitPrice||0),0)));
       if(amount) amount.oninput=()=>{amount.dataset.base=amount.value;updateJobTotal()};
-      function updateJobTotal(){const base=Number(amount?.dataset.base??amount?.value)||0;const sell=[...form.querySelectorAll('[data-part]:checked')].reduce((n,ch)=>n+(Number(form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).value)||0)*Number(db.stockItems.find(x=>x.id===ch.dataset.part)?.unitPrice||0),0);if(amount)amount.value=String(base+sell)}
+      function updateJobTotal(){const base=Number(amount?.dataset.base??amount?.value)||0;const hiddenSell=parts.filter(p=>!visibleItems.some(i=>i.id===p.itemId)).reduce((n,p)=>n+Number(p.quantity||0)*Number(p.unitPrice||0),0);const sell=hiddenSell+[...form.querySelectorAll('[data-part]:checked')].reduce((n,ch)=>n+(Number(form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).value)||0)*Number(db.stockItems.find(x=>x.id===ch.dataset.part)?.unitPrice||0),0);if(amount)amount.value=String(base+sell);if(statusSelect?.value==='Pagado'&&form.elements.namedItem('paidAmount'))form.elements.namedItem('paidAmount').value=String(base+sell)}
     }
   };
   const originalSubmit=document.getElementById('entryForm').onsubmit;
@@ -243,9 +283,10 @@
     let expenseSnapshot=null;
     if(type==='job') {
       if(!form.elements.namedItem('client')?.value){event.preventDefault();toast('Seleccioná un cliente');return false;}
-      if(Number(form.elements.namedItem('paidAmount')?.value||0)>Number(form.elements.namedItem('amount')?.value||0)){event.preventDefault();toast('El importe pagado no puede superar el total');return false;}
-      const selected=[...form.querySelectorAll('[data-part]:checked')].map(ch=>{const item=db.stockItems.find(x=>x.id===ch.dataset.part),quantity=Number(form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).value)||0;return {itemId:item.id,name:item.name,quantity,unitCost:Number(item.unitCost||0),unitPrice:Number(item.unitPrice||0)}});
+      if(form.elements.namedItem('status')?.value!=='Pagado'&&Number(form.elements.namedItem('paidAmount')?.value||0)>Number(form.elements.namedItem('amount')?.value||0)){event.preventDefault();toast('El importe pagado no puede superar el total');return false;}
       const job=editingId?db.jobs.find(j=>j.id===editingId):null, previous=job?.partsUsed||[];
+      const hiddenPrevious=previous.filter(p=>!db.stockItems.some(i=>i.id===p.itemId&&qty(i)>0));
+      const selected=[...hiddenPrevious,...[...form.querySelectorAll('[data-part]:checked')].map(ch=>{const item=db.stockItems.find(x=>x.id===ch.dataset.part),quantity=Number(form.querySelector(`[data-part-qty="${ch.dataset.part}"]`).value)||0;return {itemId:item.id,name:item.name,quantity,unitCost:Number(item.unitCost||0),unitPrice:Number(item.unitPrice||0)}})];
       const returnedByItem=new Map();for(const p of previous)returnedByItem.set(p.itemId,(returnedByItem.get(p.itemId)||0)+Number(p.quantity||0));
       const shortages=selected.map(p=>({p,item:db.stockItems.find(x=>x.id===p.itemId),available:qty(db.stockItems.find(x=>x.id===p.itemId)||{quantity:0})+(returnedByItem.get(p.itemId)||0)})).filter(x=>!x.item||x.available<x.p.quantity);
       if(shortages.length){toast(`Stock insuficiente: ${shortages.map(x=>`${x.item?.name||x.p.name} (disponible ${x.available}, solicitado ${x.p.quantity})`).join(', ')}`);return false;}
@@ -255,11 +296,16 @@
       // sin pasar por los manejadores encadenados del formulario anterior.
       event.preventDefault();form.dataset.stockSubmitBusy='1';
       const incoming=Object.fromEntries(new FormData(form));
+      incoming.date=dateToISO(incoming.date);
+      if(!incoming.date){delete form.dataset.stockSubmitBusy;toast('Ingresá la fecha del trabajo en formato dd/mm/aaaa.');return false;}
       const f=job?{...job,...incoming}:incoming;
       f.amount=Number(f.amount||0);f.paidAmount=Number(f.paidAmount||0);f.warrantyMonths=Number(f.warrantyMonths||0);
+      if(f.status==='Pagado')f.paidAmount=f.amount;
       if(f.paidAmount>f.amount){delete form.dataset.stockSubmitBusy;toast('El importe pagado no puede superar el total');return false;}
+      if(f.status==='Pagado'&&f.amount<=0){delete form.dataset.stockSubmitBusy;toast('Ingresá primero el importe total del trabajo para marcarlo como pagado.');return false;}
       if(!f.title)f.title=f.description?.slice(0,60)||'Trabajo realizado';
       f.paid=f.paidAmount>=f.amount&&f.amount>0;
+      if(f.paid)f.status='Pagado';else if(f.status==='Pagado')f.status='Pendiente de cobro';
       if(job){
         const beforePaid=Number(job.paidAmount??(job.paid?job.amount:0)),delta=f.paidAmount-beforePaid;
         f.payments=(job.payments||((beforePaid>0)?[{date:job.date,amount:beforePaid}]:[])).map(p=>({...p}));
@@ -299,6 +345,12 @@
   window.deleteItem=function(type,id){if(type==='jobs'){const job=db.jobs.find(j=>j.id===id);for(const p of job?.partsUsed||[]){const item=db.stockItems.find(x=>x.id===p.itemId);if(item)item.quantity=qty(item)+Number(p.quantity||0);}db.stockMoves=db.stockMoves.filter(m=>!(m.type==='usage'&&m.referenceId===id));}if(type==='expenses'){const e=db.expenses.find(x=>x.id===id);if(e?.stockItemId){const item=db.stockItems.find(x=>x.id===e.stockItemId);if(item)item.quantity=Math.max(0,qty(item)-Number(e.stockQty||0));}db.stockMoves=db.stockMoves.filter(m=>!(m.type==='purchase'&&m.referenceId===id));}oldDelete(type,id);};
   const priorRenderAll=window.renderAll;
   window.renderAll=function(){priorRenderAll();renderStock();};
+  const priorRenderHome=window.renderHome;
+  window.renderHome=function(){
+    priorRenderHome();
+    const pending=db.jobs.filter(j=>{const total=Number(j.amount||0),paid=Number(j.paidAmount??(j.paid?total:0));return !['Completado','Pagado'].includes(j.status)&&!(total>0&&paid>=total);});
+    const target=document.getElementById('mPending');if(target)target.textContent=pending.length;
+  };
   const priorRenderFinance=window.renderFinance;
   window.renderFinance=function(){
     priorRenderFinance();
